@@ -60,9 +60,9 @@ During training of the network, optimize the weights of `u` as well. For example
       
           for batch_number, (Actualdata, Augumented, label, indexs) in yourdataloader:
       
-              Actualdata, label = Actualdata.to(self.device), label.long().to(self.device)
+              Actualdata, label = Actualdata.to(device), label.long().to(device)
       
-              target = torch.zeros(len(label),your_number_of_classes).to(self.device).scatter_(1, label.view(-1,1), 1)
+              target = torch.zeros(len(label),your_number_of_classes).to(device).scatter_(1, label.view(-1,1), 1)
       
               if (you want to use the additional regularisation of LC and LB) > 0:
                   Augumented = Augumented.to(self.device)
