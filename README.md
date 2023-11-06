@@ -1,7 +1,7 @@
 
 # Loss Function for Improved Learning with Noisy Labels
 
-This repository contains an implementation of the loss function proposed in the paper "Combining Distance to Class Centroids and Outlier Discounting for Improved Learning with Noisy Labels". The loss function can be used to train  deep neural networks especially in the presence of noisy labels.
+This repository contains an implementation of the loss function proposed in the paper "Combining Distance to Class Centroids and Outlier Discounting for Improved Learning with Noisy Labels". The loss function can be used to train  deep neural networks, especially in the presence of noisy labels.
 
 ## Usage
 
@@ -84,7 +84,8 @@ During training of the network, optimize the weights of `u` as well. For example
 
 
 
-
+# Example:
+For example, check the implementation folder
 
 
 
