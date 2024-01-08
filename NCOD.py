@@ -12,42 +12,42 @@ encoder_features =512
 total_epochs = 150
 
 class ncodLoss(nn.Module):
-    def __init__(self, sample_labels, num_examp=50000, num_classes=100, ratio_consistency=0, ratio_balance=0):
+    def __init__(self, labels, n=50000, C=100, ratio_consistency=0, ratio_balance=0):
         super(ncodLoss, self).__init__()
 
-        self.num_classes = num_classes
+        self.C = C
         self.USE_CUDA = torch.cuda.is_available()
-        self.num_examp = num_examp
+        self.n = n
 
         self.ratio_consistency = ratio_consistency
         self.ratio_balance = ratio_balance
 
 
-        self.u = nn.Parameter(torch.empty(num_examp, 1, dtype=torch.float32))
+        self.u = nn.Parameter(torch.empty(n, 1, dtype=torch.float32))
         self.init_param(mean=mean,std=std)
 
         self.beginning = True
-        self.prevSimilarity = torch.rand((num_examp, encoder_features))
-        self.masterVector = torch.rand((num_classes, encoder_features))
-        self.sample_labels = sample_labels
+        self.prev_phi_x_i = torch.rand((n, encoder_features))
+        self.phi_c = torch.rand((C, encoder_features))
+        self.labels = labels
         self.bins = []
 
-        for i in range(0, num_classes):
-            self.bins.append(np.where(self.sample_labels == i)[0])
+        for i in range(0, C):
+            self.bins.append(np.where(self.labels == i)[0])
 
 
     def init_param(self, mean= 1e-8, std= 1e-9):
         torch.nn.init.normal_(self.u, mean=mean, std=std)
 
 
-    def forward(self, index, outputs, label, out, flag, epoch):
+    def forward(self, index, f_x_i, y, phi_x_i, flag, epoch):
 
-        if len(outputs) > len(index):
-            output, output2 = torch.chunk(outputs, 2)
-            out1, out2 = torch.chunk(out, 2)
+        if len(f_x_i) > len(index):
+            f_x_i_1, f_x_i_2 = torch.chunk(f_x_i, 2)
+            phi_x_i_1, phi_x_i_2 = torch.chunk(phi_x_i, 2)
         else:
-            output = outputs
-            out1 = out
+            f_x_i_1 = f_x_i
+            phi_x_i_1 = phi_x_i
 
         eps = 1e-4
 
@@ -62,65 +62,64 @@ class ncodLoss(nn.Module):
                     class_u = self.u.detach()[self.bins[i]]
                     bottomK = int((len(class_u) / 100) * percent)
                     important_indexs = torch.topk(class_u, bottomK, largest=False, dim=0)[1]
-                    self.masterVector[i] = torch.mean(self.prevSimilarity[self.bins[i]][important_indexs.view(-1)],
+                    self.phi_c[i] = torch.mean(self.prev_phi_x_i[self.bins[i]][important_indexs.view(-1)],
                                                       dim=0)
 
-            masterVector_norm = self.masterVector.norm(p=2, dim=1, keepdim=True)
-            masterVector_normalized = self.masterVector.div(masterVector_norm)
-            self.masterVector_transpose = torch.transpose(masterVector_normalized, 0, 1)
+            phi_c_norm = self.phi_c.norm(p=2, dim=1, keepdim=True)
+            h_c_bar = self.phi_c.div(phi_c_norm)
+            self.h_c_bar_T = torch.transpose(h_c_bar, 0, 1)
             self.beginning = True
 
-        self.prevSimilarity[index] = out1.detach()
+        self.prev_phi_x_i[index] = phi_x_i_1.detach()
 
-        prediction = F.softmax(output, dim=1)
+        f_x_softmax = F.softmax(f_x_i_1, dim=1)
 
-        out_norm = out1.detach().norm(p=2, dim=1, keepdim=True)
-        out_normalized = out1.detach().div(out_norm)
+        phi_x_i_1_norm = phi_x_i_1.detach().norm(p=2, dim=1, keepdim=True)
+        h_i = phi_x_i_1.detach().div(phi_x_i_1_norm)
 
-        similarity = torch.mm(out_normalized, self.masterVector_transpose)
-        similarity = similarity * label
-        sim_mask = (similarity > 0.000).type(torch.float32)
-        similarity = similarity * sim_mask
+        y_bar = torch.mm(h_i, self.h_c_bar_T)
+        y_bar = y_bar * y
+        y_bar_max = (y_bar > 0.000).type(torch.float32)
+        y_bar = y_bar * y_bar_max
 
-        u = u * label
+        u = u * y
 
-        prediction = torch.clamp((prediction + u.detach()), min=eps, max=1.0)
-        loss = torch.mean(-torch.sum((similarity) * torch.log(prediction), dim=1))
+        f_x_softmax = torch.clamp((f_x_softmax + u.detach()), min=eps, max=1.0)
+        L1 = torch.mean(-torch.sum((y_bar) * torch.log(f_x_softmax), dim=1))
 
-        label_one_hot = self.soft_to_hard(output.detach())
+        y_hat = self.soft_to_hard(f_x_i_1.detach())
 
-        MSE_loss = F.mse_loss((label_one_hot + u), label, reduction='sum') / len(label)
-        loss += MSE_loss
+        L2 = F.MSE_loss((y_hat + u), y, reduction='sum') / len(y)
+        L1 += L2
 
 
 
         if self.ratio_balance > 0:
-            avg_prediction = torch.mean(prediction, dim=0)
-            prior_distr = 1.0 / self.num_classes * torch.ones_like(avg_prediction)
+            avg_prediction = torch.mean(f_x_softmax, dim=0)
+            prior_distr = 1.0 / self.C * torch.ones_like(avg_prediction)
 
             avg_prediction = torch.clamp(avg_prediction, min=eps, max=1.0)
 
             balance_kl = torch.mean(-(prior_distr * torch.log(avg_prediction)).sum(dim=0))
 
-            loss += self.ratio_balance * balance_kl
+            L1 += self.ratio_balance * balance_kl
 
-        if (len(outputs) > len(index)) and (self.ratio_consistency > 0):
-            consistency_loss = self.consistency_loss( output, output2)
+        if (len(f_x_i) > len(index)) and (self.ratio_consistency > 0):
+            consistency_loss = self.consistency_loss( f_x_i_1, f_x_i_2)
 
-            loss += self.ratio_consistency * torch.mean(consistency_loss)
-
-
-        return loss
+            L1 += self.ratio_consistency * torch.mean(consistency_loss)
 
 
-    def consistency_loss(self, output1, output2):
-        preds1 = F.softmax(output1, dim=1).detach()
-        preds2 = F.log_softmax(output2, dim=1)
+        return L1
+
+
+    def consistency_loss(self,  f_x_i_1, f_x_i_2):
+        preds1 = F.softmax( f_x_i_1, dim=1).detach()
+        preds2 = F.log_softmax(f_x_i_2, dim=1)
         loss_kldiv = F.kl_div(preds2, preds1, reduction='none')
         loss_kldiv = torch.sum(loss_kldiv, dim=1)
         return loss_kldiv
 
     def soft_to_hard(self, x):
         with torch.no_grad():
-            return (torch.zeros(len(x), self.num_classes)).cuda().scatter_(1, (x.argmax(dim=1)).view(-1, 1),
-                                                                                     1)
+            return (torch.zeros(len(x), self.C)).cuda().scatter_(1, (x.argmax(dim=1)).view(-1, 1), 1)
